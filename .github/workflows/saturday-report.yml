@@ -2,8 +2,8 @@ name: Saturday Activity Report
 
 on:
   schedule:
-    # 20:00 UTC every Saturday (21:00 BST / 20:00 GMT) — after dialling ends at 20:30
-    - cron: '0 20 * * 6'
+    # 18:00 UTC every Saturday (19:00 BST / 18:00 GMT) — Saturday shifts finish ~18:10
+    - cron: '0 18 * * 6'
   workflow_dispatch:
     inputs:
       day:
