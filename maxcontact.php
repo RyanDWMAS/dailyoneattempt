@@ -199,10 +199,13 @@ function fetchOccupancyReport($startISO, $endISO, $campaignIds) {
 
 /**
  * Internal helper for Telerik Reports REST API calls.
+ *
+ * $accept must be widened to a wildcard when downloading a rendered
+ * document (MHTML/PDF/etc) — the server errors if asked for JSON.
  */
-function mcReportApiCall($url, $cookies, $method = 'GET', $body = null) {
+function mcReportApiCall($url, $cookies, $method = 'GET', $body = null, $accept = 'application/json') {
     $ch = curl_init($url);
-    $headers = ['Cookie: ' . $cookies, 'Accept: application/json'];
+    $headers = ['Cookie: ' . $cookies, 'Accept: ' . $accept];
     if ($body !== null) $headers[] = 'Content-Type: application/json';
     $opts = [
         CURLOPT_RETURNTRANSFER => true,
@@ -218,6 +221,205 @@ function mcReportApiCall($url, $cookies, $method = 'GET', $body = null) {
     $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     return [$http, $resp];
+}
+
+/**
+ * Fetch the "Activity Summary" report (Manager Portal reportId=90).
+ *
+ * Returns each agent's shift start/end plus every away-from-desk event
+ * (Lunch, Bathroom, Other, Admin, AgentDisconnect ...) with its start,
+ * end and duration.
+ *
+ * Rendered as MHTML rather than CSV: this report groups Campaign/Date/
+ * User/Event, and Telerik's CSV export collapses that to a single row,
+ * silently dropping every agent but the first. MHTML carries the fully
+ * rendered report, so we decode it and read the laid-out rows back.
+ *
+ * @param string $startISO    Start datetime, e.g. "2026-07-11T00:00:00"
+ * @param string $endISO      End datetime, e.g. "2026-07-12T00:00:00"
+ * @param array  $campaignIds Campaign IDs as strings, e.g. ['238']
+ * @return array [agents, error] — agents keyed by name:
+ *   ['shift_start','shift_end','duration','man_hours','break_total',
+ *    'events' => [['type','start','end','duration'], ...]]
+ */
+function fetchActivitySummary($startISO, $endISO, $campaignIds) {
+    [$cookies, $err] = mcLogin();
+    if ($err) return [null, $err];
+
+    $base = MC_BASE_URL . '/api/reportwebapi';
+
+    [$h, $body] = mcReportApiCall($base . '/clients', $cookies, 'POST', '{}');
+    if ($h !== 200) return [null, "Telerik client registration failed: HTTP $h $body"];
+    $clientId = json_decode($body, true)['clientId'] ?? null;
+    if (!$clientId) return [null, "No clientId in response: $body"];
+
+    // teamIds and userIds are mandatory for this report, so ask the API for
+    // the full available list and pass everything — the campaign filter is
+    // what actually narrows the result.
+    $campaignIds = array_values(array_map('strval', $campaignIds));
+    $teamIds = mcParameterValues($base, $clientId, $cookies, ['campaignIds' => $campaignIds], 'teamIds');
+    if ($teamIds === null) return [null, 'Could not resolve teamIds'];
+    $userIds = mcParameterValues($base, $clientId, $cookies, ['campaignIds' => $campaignIds, 'teamIds' => $teamIds], 'userIds');
+    if ($userIds === null) return [null, 'Could not resolve userIds'];
+
+    $instanceBody = json_encode([
+        'report' => 'ActivitySummary.trdx',
+        'parameterValues' => [
+            'startDate'   => $startISO,
+            'endDate'     => $endISO,
+            'campaignIds' => $campaignIds,
+            'teamIds'     => $teamIds,
+            'userIds'     => $userIds,
+            'Lookup_agentstatus_BreakTime' => '0',  // 0 = No Filter (show all users)
+            'showcalcs'   => false,
+            'Culture'     => ['en-GB'],
+        ],
+    ]);
+    [$h, $body] = mcReportApiCall($base . "/clients/$clientId/instances", $cookies, 'POST', $instanceBody);
+    if ($h !== 201) return [null, "Activity instance creation failed: HTTP $h $body"];
+    $instId = json_decode($body, true)['instanceId'] ?? null;
+    if (!$instId) return [null, "No instanceId in response: $body"];
+
+    [$h, $body] = mcReportApiCall($base . "/clients/$clientId/instances/$instId/documents", $cookies, 'POST', json_encode(['format' => 'MHTML', 'deviceInfo' => new stdClass()]));
+    if ($h !== 202) return [null, "Activity document request failed: HTTP $h $body"];
+    $docId = json_decode($body, true)['documentId'] ?? null;
+    if (!$docId) return [null, "No documentId in response: $body"];
+
+    $ready = false;
+    for ($i = 0; $i < 45; $i++) {
+        [$h, $body] = mcReportApiCall($base . "/clients/$clientId/instances/$instId/documents/$docId/info", $cookies);
+        if ($h !== 200 && $h !== 202) return [null, "Activity polling failed: HTTP $h $body"];
+        if (!empty(json_decode($body, true)['documentReady'])) { $ready = true; break; }
+        sleep(2);
+    }
+    if (!$ready) return [null, 'Activity document never became ready'];
+
+    [$h, $mht] = mcReportApiCall($base . "/clients/$clientId/instances/$instId/documents/$docId", $cookies, 'GET', null, '*/*');
+    if ($h !== 200) return [null, "Activity download failed: HTTP $h"];
+
+    $html = mcExtractHtmlFromMhtml($mht);
+    if ($html === null) return [null, 'Could not extract HTML from MHTML response'];
+
+    return [parseActivitySummaryHtml($html), null];
+}
+
+/**
+ * Ask the Telerik parameters endpoint for the available values of one
+ * (cascading) parameter, given the values chosen so far.
+ *
+ * @return array|null List of values as strings, or null on failure.
+ */
+function mcParameterValues($base, $clientId, $cookies, $parameterValues, $want) {
+    $body = json_encode(['report' => 'ActivitySummary.trdx', 'parameterValues' => $parameterValues]);
+    [$h, $resp] = mcReportApiCall($base . "/clients/$clientId/parameters", $cookies, 'POST', $body);
+    if ($h !== 200) return null;
+    foreach (json_decode($resp, true) ?: [] as $p) {
+        if (($p['name'] ?? '') === $want) {
+            return array_map(fn($a) => (string) $a['value'], $p['availableValues'] ?? []);
+        }
+    }
+    return null;
+}
+
+/**
+ * Pull the text/html part out of a Telerik MHTML (multipart/related) export.
+ */
+function mcExtractHtmlFromMhtml($mht) {
+    if (!preg_match('/boundary="([^"]+)"/', $mht, $m)) return null;
+    foreach (explode('--' . $m[1], $mht) as $part) {
+        if (stripos($part, 'Content-Type: text/html') === false) continue;
+        $split = preg_split("/\r?\n\r?\n/", $part, 2);
+        if (count($split) < 2) continue;
+        [$hdr, $body] = $split;
+        return stripos($hdr, 'base64') !== false
+            ? base64_decode(preg_replace('/\s+/', '', $body))
+            : quoted_printable_decode($body);
+    }
+    return null;
+}
+
+/**
+ * Parse the rendered Activity Summary HTML into per-agent activity.
+ *
+ * The report lays out absolutely-positioned divs rather than a table, but
+ * emits them in reading order, which gives a reliable grammar:
+ *   <label> followed by a run of HH:MM:SS (or N/A) values
+ *     5 values => a User row  (start, end, duration, man hours, break total)
+ *     3 values => an Event row (start, end, duration)
+ * Date rows (dd/mm/yyyy), "Total" and "N/A" rows are group headers.
+ *
+ * The report renders the same data twice — once grouped Date/User/Event and
+ * again grouped Campaign/Date/User/Event. We stop at the second "Total" so we
+ * only read the first table, which also avoids mistaking the campaign row
+ * (also 5 values) for an agent.
+ */
+function parseActivitySummaryHtml($html) {
+    $html = preg_replace('#<(style|script)\b[^>]*>.*?</\1>#is', '', $html);
+
+    $dom = new DOMDocument();
+    libxml_use_internal_errors(true);
+    $dom->loadHTML('<?xml encoding="utf-8" ?>' . $html);
+    libxml_clear_errors();
+    $xp = new DOMXPath($dom);
+
+    // Collect text from leaf nodes only, in document order
+    $tokens = [];
+    foreach ($xp->query('//div | //span') as $n) {
+        foreach ($n->childNodes as $c) {
+            if ($c->nodeType === XML_ELEMENT_NODE) continue 2;
+        }
+        $t = trim(preg_replace('/\s+/u', ' ', $n->textContent));
+        if ($t !== '') $tokens[] = $t;
+    }
+
+    $isTime = fn($s) => (bool) preg_match('/^\d{1,3}:\d{2}:\d{2}$/', $s);
+    $isDate = fn($s) => (bool) preg_match('#^\d{2}/\d{2}/\d{4}$#', $s);
+
+    $agents = [];
+    $current = null;
+    $totals  = 0;
+
+    for ($i = 0; $i < count($tokens); $i++) {
+        $label = $tokens[$i];
+        if ($isTime($label) || $label === 'N/A') continue;   // consumed as values
+
+        // Gather the run of values following this label
+        $vals = [];
+        for ($j = $i + 1; $j < count($tokens) && ($isTime($tokens[$j]) || $tokens[$j] === 'N/A'); $j++) {
+            $vals[] = $tokens[$j];
+        }
+        if (!$vals) continue;
+
+        if ($label === 'Total') {
+            $totals++;
+            if ($totals >= 2) break;   // second table starts here — same data again
+            continue;
+        }
+        if ($isDate($label)) { $current = null; continue; }
+
+        if (count($vals) >= 5 && !$isTime($label)) {
+            // User row
+            $current = $label;
+            $agents[$current] = [
+                'shift_start' => $vals[0],
+                'shift_end'   => $vals[1],
+                'duration'    => $vals[2],
+                'man_hours'   => $vals[3],
+                'break_total' => $vals[4],
+                'events'      => [],
+            ];
+        } elseif (count($vals) === 3 && $current !== null) {
+            // Event row
+            $agents[$current]['events'][] = [
+                'type'     => $label,
+                'start'    => $vals[0],
+                'end'      => $vals[1],
+                'duration' => $vals[2],
+            ];
+        }
+    }
+
+    return $agents;
 }
 
 /**

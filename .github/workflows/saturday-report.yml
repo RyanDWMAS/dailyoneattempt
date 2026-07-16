@@ -1,0 +1,44 @@
+name: Saturday Activity Report
+
+on:
+  schedule:
+    # 20:00 UTC every Saturday (21:00 BST / 20:00 GMT) — after dialling ends at 20:30
+    - cron: '0 20 * * 6'
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'Saturday to report on (YYYY-MM-DD)'
+        required: false
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: curl, mbstring, dom
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist
+
+      - name: Run Saturday activity report
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_FROM_NAME: ${{ secrets.EMAIL_FROM_NAME }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_CC: ${{ secrets.EMAIL_CC }}
+          MC_BASE_URL: ${{ secrets.MC_BASE_URL }}
+          MC_USERNAME: ${{ secrets.MC_USERNAME }}
+          MC_PASSWORD: ${{ secrets.MC_PASSWORD }}
+          MC_CAMPAIGN_ID: ${{ secrets.MC_CAMPAIGN_ID }}
+        run: php saturday-report.php ${{ github.event.inputs.day }}
