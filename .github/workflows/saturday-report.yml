@@ -2,8 +2,11 @@ name: Saturday Activity Report
 
 on:
   schedule:
-    # 18:00 UTC every Saturday (19:00 BST / 18:00 GMT) — Saturday shifts finish ~18:10
-    - cron: '0 18 * * 6'
+    # 19:00 UTC every Saturday. GitHub cron is always UTC and has no DST support,
+    # so this lands at 19:00 GMT in winter and 20:00 BST in summer. Chosen over
+    # 18:00 UTC so the drift only ever runs later, never earlier: Saturday shifts
+    # finish ~18:10 local, and 18:00 UTC would fire before that in winter.
+    - cron: '0 19 * * 6'
   workflow_dispatch:
     inputs:
       day:
