@@ -8,6 +8,7 @@
  *   2. Shift start / end                      (Activity Summary, reportId=90)
  *   3. Calls taken                            (RecordHistory export)
  *   4. Not Ready time                         (Occupancy Summary, reportId=61)
+ *   5. Talk time                              (Occupancy Summary, reportId=61)
  *
  * Not Ready is not an event in the Activity Summary — it is a status *within*
  * logged-on time — so it comes from the Occupancy Summary instead.
@@ -134,6 +135,7 @@ foreach ($activity as $name => $a) {
     usort($breaks, fn($x, $y) => strcmp($x['start'], $y['start']));
 
     $notReady = isset($occupancy[$name]['not_ready']) ? parseHmsTime($occupancy[$name]['not_ready']) : null;
+    $talk     = isset($occupancy[$name]['talk'])      ? parseHmsTime($occupancy[$name]['talk'])      : null;
     $logOn    = isset($occupancy[$name]['log_on'])    ? parseHmsTime($occupancy[$name]['log_on'])    : 0;
 
     $rows[] = [
@@ -145,6 +147,7 @@ foreach ($activity as $name => $a) {
         'break_seconds'  => parseHmsTime($a['break_total']),
         'breaks'         => $breaks,
         'calls'          => $callCounts[$name] ?? null,
+        'talk'           => $talk,
         'not_ready'      => $notReady,
         'log_on_seconds' => $logOn,
     ];
@@ -160,6 +163,7 @@ foreach ($unmatched as $u) {
 $team = [
     'agents'    => count($rows),
     'calls'     => array_sum(array_map(fn($r) => (int) $r['calls'], $rows)),
+    'talk'      => array_sum(array_map(fn($r) => (int) $r['talk'], $rows)),
     'break'     => array_sum(array_column($rows, 'break_seconds')),
     'not_ready' => array_sum(array_map(fn($r) => (int) $r['not_ready'], $rows)),
     'man'       => array_sum(array_column($rows, 'man_seconds')),
@@ -207,16 +211,18 @@ function renderKpiCards($team) {
     $cards = [
         ['label' => 'Agents on Shift', 'value' => $team['agents'],              'sub' => '',                              'color' => '#4a6cf7'],
         ['label' => 'Calls Taken',     'value' => number_format($team['calls']), 'sub' => '',                             'color' => '#27ae60'],
-        ['label' => 'Break Time',      'value' => fmtDur($team['break']),        'sub' => fmtPct(pctOf($team['break'], $team['log_on'])) . ' of log-on', 'color' => '#f39c12'],
+        ['label' => 'Talk Time',       'value' => fmtDur($team['talk']),         'sub' => fmtPct(pctOf($team['talk'], $team['log_on'])) . ' of log-on',      'color' => '#16a085'],
+        ['label' => 'Break Time',      'value' => fmtDur($team['break']),        'sub' => fmtPct(pctOf($team['break'], $team['log_on'])) . ' of log-on',     'color' => '#f39c12'],
         ['label' => 'Not Ready',       'value' => fmtDur($team['not_ready']),    'sub' => fmtPct(pctOf($team['not_ready'], $team['log_on'])) . ' of log-on', 'color' => '#e74c3c'],
     ];
 
+    $width = round(100 / count($cards), 2);
     $h = "<table cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"width:100%;border-collapse:separate;border-spacing:8px 0;margin-bottom:8px\"><tr>";
     foreach ($cards as $c) {
         $sub = $c['sub'] !== '' && strpos($c['sub'], '-') !== 0
             ? "<div style=\"color:{$c['color']};font-size:0.85rem;margin-top:4px;font-weight:600\">{$c['sub']}</div>"
             : '';
-        $h .= "<td valign=\"top\" style=\"width:25%\">";
+        $h .= "<td valign=\"top\" style=\"width:{$width}%\">";
         $h .= "<div style=\"background:#f8f9fa;border:1px solid #ececec;border-top:3px solid {$c['color']};border-radius:8px;padding:16px;text-align:center\">";
         $h .= "<div style=\"font-size:0.7rem;color:#666;text-transform:uppercase;letter-spacing:0.6px;font-weight:600\">{$c['label']}</div>";
         $h .= "<div style=\"font-size:1.65rem;font-weight:700;margin-top:6px;color:{$c['color']}\">{$c['value']}</div>";
@@ -241,13 +247,13 @@ function buildHtml($rows, $team, $dayDisplay, $unmatched) {
     $h .= renderKpiCards($team);
 
     $h .= "<p style=\"margin-top:24px\">Hi both,</p>";
-    $h .= "<p>Please find below the Saturday shift breakdown for <b>$dayDisplay</b>, covering shift times, breaks, calls taken and Not Ready time.</p>";
+    $h .= "<p>Please find below the Saturday shift breakdown for <b>$dayDisplay</b>, covering shift times, breaks, calls taken, talk time and Not Ready time.</p>";
 
     // ── Shift overview ──
     $h .= sectionHeader('Shifts &amp; Calls', '#4a6cf7');
     $h .= "<table cellpadding=\"8\" cellspacing=\"0\" style=\"border-collapse:collapse;font-size:13px;width:100%\">";
     $h .= "<thead><tr style=\"background:#f8f9fa;text-align:left\">";
-    foreach (['Agent', 'Shift Start', 'Shift End', 'On Shift', 'Man Hours', 'Calls', 'Break', 'Not Ready'] as $col) {
+    foreach (['Agent', 'Shift Start', 'Shift End', 'On Shift', 'Man Hours', 'Calls', 'Talk', 'Break', 'Not Ready'] as $col) {
         $h .= "<th style=\"border-bottom:2px solid #e0e0e0;padding:10px 8px;font-weight:600;color:#555;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px\">$col</th>";
     }
     $h .= "</tr></thead><tbody>";
@@ -257,6 +263,8 @@ function buildHtml($rows, $team, $dayDisplay, $unmatched) {
         $breakPct    = fmtPct(pctOf($r['break_seconds'], $r['log_on_seconds']));
         $notReadyStr = $r['not_ready'] === null ? '-' : fmtDur($r['not_ready']);
         $notReadyPct = $r['not_ready'] === null ? '' : ' <span style="color:#999">(' . fmtPct(pctOf($r['not_ready'], $r['log_on_seconds'])) . ')</span>';
+        $talkStr     = $r['talk'] === null ? '-' : fmtDur($r['talk']);
+        $talkPct     = $r['talk'] === null ? '' : ' <span style="color:#999;font-weight:400">(' . fmtPct(pctOf($r['talk'], $r['log_on_seconds'])) . ')</span>';
 
         $h .= "<tr style=\"background:$bg\">";
         $h .= "<td style=\"padding:10px 8px\"><b>" . htmlspecialchars($r['name']) . "</b></td>";
@@ -265,6 +273,7 @@ function buildHtml($rows, $team, $dayDisplay, $unmatched) {
         $h .= "<td style=\"padding:10px 8px\">" . fmtDur($r['span_seconds']) . "</td>";
         $h .= "<td style=\"padding:10px 8px\">" . fmtDur($r['man_seconds']) . "</td>";
         $h .= "<td style=\"padding:10px 8px;font-weight:600\">" . ($r['calls'] === null ? '-' : $r['calls']) . "</td>";
+        $h .= "<td style=\"padding:10px 8px;color:#16a085;font-weight:600\">$talkStr$talkPct</td>";
         $h .= "<td style=\"padding:10px 8px;color:#f39c12;font-weight:600\">" . fmtDur($r['break_seconds']) . " <span style=\"color:#999;font-weight:400\">($breakPct)</span></td>";
         $h .= "<td style=\"padding:10px 8px;color:#e74c3c;font-weight:600\">$notReadyStr$notReadyPct</td>";
         $h .= "</tr>";
@@ -277,6 +286,7 @@ function buildHtml($rows, $team, $dayDisplay, $unmatched) {
     $h .= "<td style=\"padding:12px 8px;border-top:2px solid #4a6cf7\">-</td>";
     $h .= "<td style=\"padding:12px 8px;border-top:2px solid #4a6cf7\">" . fmtDur($team['man']) . "</td>";
     $h .= "<td style=\"padding:12px 8px;border-top:2px solid #4a6cf7\">" . number_format($team['calls']) . "</td>";
+    $h .= "<td style=\"padding:12px 8px;border-top:2px solid #4a6cf7;color:#16a085\">" . fmtDur($team['talk']) . "</td>";
     $h .= "<td style=\"padding:12px 8px;border-top:2px solid #4a6cf7;color:#f39c12\">" . fmtDur($team['break']) . "</td>";
     $h .= "<td style=\"padding:12px 8px;border-top:2px solid #4a6cf7;color:#e74c3c\">" . fmtDur($team['not_ready']) . "</td>";
     $h .= "</tr></tbody></table>";
