@@ -1,0 +1,46 @@
+name: End-of-Shift Break Report
+
+on:
+  schedule:
+    # 21:00 UTC Mon–Sat, after shifts have ended (matches the daily one-attempt run).
+    # GitHub cron is UTC-only: this is 21:00 GMT in winter, 22:00 BST in summer —
+    # always well after clock-off, so the full day's activity is captured.
+    - cron: '0 21 * * 1-6'
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'Day to report on (YYYY-MM-DD), leave blank for today'
+        required: false
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: curl, mbstring, dom
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist
+
+      - name: Run end-of-shift break report
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_FROM_NAME: ${{ secrets.EMAIL_FROM_NAME }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_CC: ${{ secrets.EMAIL_CC }}
+          MC_BASE_URL: ${{ secrets.MC_BASE_URL }}
+          MC_USERNAME: ${{ secrets.MC_USERNAME }}
+          MC_PASSWORD: ${{ secrets.MC_PASSWORD }}
+          MC_CAMPAIGN_ID: ${{ secrets.MC_CAMPAIGN_ID }}
+        run: php endshift-report.php ${{ github.event.inputs.day }}
