@@ -49,7 +49,7 @@ use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
 // ── Set to true to email Ryan only ──
-const TEST_MODE = true;
+const TEST_MODE = false;
 
 // A Bathroom break starting this close to final logout (or nearer) is flagged.
 const END_SHIFT_WINDOW_SECONDS = 20 * 60;
@@ -71,9 +71,17 @@ if (isset($argv[1]) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $argv[1])) {
 $dayIso     = $day->format('Y-m-d');
 $dayDisplay = $day->format('d/m/Y');
 $startISO   = $dayIso . 'T00:00:00';
-$endISO     = (clone $day)->modify('+1 day')->format('Y-m-d') . 'T00:00:00';
+// End at the same day's last second: the Telerik reports treat the end date
+// inclusively, so a next-day midnight would pull in the following day's shifts.
+$endISO     = $dayIso . 'T23:59:59';
 
 log_msg("Target day: $dayDisplay");
+
+// No calling on Sundays, so there is nothing to report.
+if ($day->format('N') === '7') {
+    log_msg('Target day is a Sunday — no calling takes place; nothing to send.');
+    exit(0);
+}
 
 // ── Activity Summary — shift ends + bathroom events ──
 log_msg('Fetching Activity Summary (reportId=90)...');
@@ -390,10 +398,12 @@ function sendEmail($html, $dayDisplay) {
         $mail->Port       = SMTP_PORT;
 
         $mail->setFrom(EMAIL_FROM, EMAIL_FROM_NAME);
-        $mail->addAddress(EMAIL_FROM);   // Ryan
-        if (!TEST_MODE) {
-            $mail->addCC(EMAIL_TO);      // Tina
-            $mail->addCC(EMAIL_CC);      // Tom
+        if (TEST_MODE) {
+            $mail->addAddress(EMAIL_FROM);   // Ryan only
+        } else {
+            $mail->addAddress(EMAIL_TO);     // Tina
+            $mail->addAddress(EMAIL_CC);     // Tom
+            $mail->addBCC(EMAIL_FROM);       // Ryan (bcc)
         }
 
         $mail->Subject = "End-of-Shift Break Report - $dayDisplay";

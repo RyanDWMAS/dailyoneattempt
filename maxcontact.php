@@ -349,9 +349,18 @@ function mcExtractHtmlFromMhtml($mht) {
  * Date rows (dd/mm/yyyy), "Total" and "N/A" rows are group headers.
  *
  * The report renders the same data twice — once grouped Date/User/Event and
- * again grouped Campaign/Date/User/Event. We stop at the second "Total" so we
- * only read the first table, which also avoids mistaking the campaign row
- * (also 5 values) for an agent.
+ * again grouped Campaign/Date/User/Event — and paginates, repeating "Total"
+ * page-footers between users. So we can't delimit on "Total" counts. Instead:
+ *   - keep the FIRST occurrence of each agent (the second grouping repeats
+ *     them, so later duplicates are ignored to avoid double-counting events);
+ *   - skip the campaign parent row (also 5 values) — it is the only 5-value
+ *     row immediately followed by a date rather than by event rows;
+ *   - never reset the current agent on a "Total", so a user whose events span
+ *     a page break still accumulates correctly;
+ *   - guard on the event timeline: an agent's events run forward in time, so a
+ *     large backward jump means a page break has spilled a re-rendered agent's
+ *     events in with no user row of their own — close the current agent and
+ *     ignore them until the next real user row.
  */
 function parseActivitySummaryHtml($html) {
     $html = preg_replace('#<(style|script)\b[^>]*>.*?</\1>#is', '', $html);
@@ -375,9 +384,9 @@ function parseActivitySummaryHtml($html) {
     $isTime = fn($s) => (bool) preg_match('/^\d{1,3}:\d{2}:\d{2}$/', $s);
     $isDate = fn($s) => (bool) preg_match('#^\d{2}/\d{2}/\d{4}$#', $s);
 
-    $agents = [];
-    $current = null;
-    $totals  = 0;
+    $agents   = [];
+    $current  = null;   // agent name currently accumulating events, or null to ignore
+    $lastEnd  = null;   // seconds-of-day of the current agent's last event end
 
     for ($i = 0; $i < count($tokens); $i++) {
         $label = $tokens[$i];
@@ -389,17 +398,20 @@ function parseActivitySummaryHtml($html) {
             $vals[] = $tokens[$j];
         }
         if (!$vals) continue;
+        $nextLabel = $tokens[$j] ?? null;   // the label following this row's values
 
-        if ($label === 'Total') {
-            $totals++;
-            if ($totals >= 2) break;   // second table starts here — same data again
-            continue;
-        }
+        if ($label === 'Total') continue;              // page/grand total — leave $current as-is
         if ($isDate($label)) { $current = null; continue; }
 
-        if (count($vals) >= 5 && !$isTime($label)) {
-            // User row
+        if (count($vals) >= 5) {
+            // A 5-value row is either a User row or the Campaign parent row.
+            // The campaign row is the parent of dates, so it is followed by a
+            // date; a user is followed by its event rows.
+            if ($nextLabel !== null && $isDate($nextLabel)) { $current = null; continue; }
+            // User row — keep only the first occurrence (later groupings repeat it)
+            if (isset($agents[$label])) { $current = null; continue; }
             $current = $label;
+            $lastEnd = parseHmsTime($vals[0]);   // baseline: shift start
             $agents[$current] = [
                 'shift_start' => $vals[0],
                 'shift_end'   => $vals[1],
@@ -409,13 +421,22 @@ function parseActivitySummaryHtml($html) {
                 'events'      => [],
             ];
         } elseif (count($vals) === 3 && $current !== null) {
-            // Event row
+            // Event row. Guard against a page break spilling another agent's
+            // re-rendered events in with no user row: their timeline jumps
+            // backwards, so close the current agent and ignore them.
+            $startSecs = parseHmsTime($vals[0]);
+            if ($lastEnd !== null && $startSecs < $lastEnd - 60) {
+                $current = null;
+                $lastEnd = null;
+                continue;
+            }
             $agents[$current]['events'][] = [
                 'type'     => $label,
                 'start'    => $vals[0],
                 'end'      => $vals[1],
                 'duration' => $vals[2],
             ];
+            $lastEnd = parseHmsTime($vals[1]);
         }
     }
 
