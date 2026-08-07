@@ -2,10 +2,16 @@ name: End-of-Shift Break Report
 
 on:
   schedule:
-    # 21:00 UTC Mon–Sat, after shifts have ended (matches the daily one-attempt run).
-    # GitHub cron is UTC-only: this is 21:00 GMT in winter, 22:00 BST in summer —
-    # always well after clock-off, so the full day's activity is captured.
-    - cron: '0 21 * * 1-6'
+    # 21:10 UTC Mon–Sat, after shifts end (~20:47 local). This is 21:10 GMT in
+    # winter, 22:10 BST in summer. The odd minute avoids the heavily-contended
+    # top-of-hour, which reduces GitHub's scheduling delay.
+    #
+    # GitHub Actions runs scheduled jobs on a best-effort basis and can delay
+    # them by hours — a 21:00 run once slipped to 00:59 the next day. The report
+    # script guards against this: a run landing in the small hours (before noon
+    # UTC) is treated as a delayed evening run and reports the previous day, so
+    # the day that just ended is always the one reported.
+    - cron: '10 21 * * 1-6'
   workflow_dispatch:
     inputs:
       day:

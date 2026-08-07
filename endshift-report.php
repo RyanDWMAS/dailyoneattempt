@@ -63,10 +63,19 @@ function log_msg($msg) {
 }
 
 // ── Determine target day ──
+// The scheduled run fires in the evening (21:00 UTC) to report the working day
+// that has just ended. But GitHub Actions can delay a scheduled job by hours,
+// pushing it past midnight UTC — which would flip "today" to the next,
+// not-yet-worked day. So when no explicit date is given and we find ourselves
+// running in the small hours (before noon UTC), treat it as a delayed evening
+// run and report the previous day.
 if (isset($argv[1]) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $argv[1])) {
     $day = new DateTime($argv[1]);
 } else {
-    $day = new DateTime();
+    $day = new DateTime('now', new DateTimeZone('UTC'));
+    if ((int) $day->format('H') < 12) {
+        $day->modify('-1 day');
+    }
 }
 $dayIso     = $day->format('Y-m-d');
 $dayDisplay = $day->format('d/m/Y');
