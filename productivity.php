@@ -6,7 +6,7 @@
  *   - Not Ready > 3% of log-on time
  *   - Break    > 8% of log-on time
  *   - Wrap     > 2% of log-on time
- *   - Log-on   < 7.5h on any worked day
+ *   - Log-on   < 7h on any worked day
  *
  * Stage progression:
  *   None      -> Informal  (2 consecutive triggered weeks)
@@ -27,7 +27,7 @@ require_once __DIR__ . '/supabase.php';
 const PROD_THRESH_NOT_READY = 0.03;
 const PROD_THRESH_BREAK     = 0.08;
 const PROD_THRESH_WRAP      = 0.02;
-const PROD_MIN_DAILY_LOGON_SECONDS = 7.5 * 3600;
+const PROD_MIN_DAILY_LOGON_SECONDS = 7 * 3600;
 
 const PROD_STAGE_WINDOWS = [
     'informal' => 28,
@@ -140,6 +140,20 @@ function applyStateMachine($prev, $triggered, $weekEnd) {
             'last_assessed_week'        => $weekEndStr,
         ],
         'transition' => $transition,
+    ];
+}
+
+/**
+ * Rebuild the status shape applyStateMachine() returns from a stored row,
+ * for when this week must be reported without progressing anyone.
+ */
+function prodStatusFromRow($row) {
+    return [
+        'current_stage'             => $row['current_stage'] ?? 'none',
+        'stage_entered_at'          => $row['stage_entered_at'] ?? null,
+        'consecutive_trigger_weeks' => (int) ($row['consecutive_trigger_weeks'] ?? 0),
+        'awaiting_hr'               => !empty($row['awaiting_hr']),
+        'last_assessed_week'        => $row['last_assessed_week'] ?? null,
     ];
 }
 
@@ -266,7 +280,7 @@ function prodTriggerLabel($code) {
         'not_ready'   => 'Not Ready > 3%',
         'break'       => 'Break > 8%',
         'wrap'        => 'Wrap > 2%',
-        'short_login' => 'Log-on < 7.5h on at least one day',
+        'short_login' => 'Log-on < 7h on at least one day',
         default       => $code,
     };
 }

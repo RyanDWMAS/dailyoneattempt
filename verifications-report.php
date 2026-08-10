@@ -39,6 +39,17 @@ use PHPMailer\PHPMailer\Exception;
 // ── Toggle to false to also email Tom and Tina ──
 const TEST_MODE = false;
 
+// ── Preview mode (php verifications-report.php --preview) ──
+// Sends only to Ryan and writes NOTHING to Supabase, so the email can be
+// reviewed (e.g. after a threshold change) without progressing anyone's
+// disciplinary stage or touching the audit trail.
+define('PREVIEW', in_array('--preview', $argv ?? [], true));
+
+// ── Supersede banner (php verifications-report.php ... --supersede) ──
+// Adds a one-off note that this re-issue corrects a version already sent —
+// used when re-sending a week after a correction (e.g. a threshold change).
+define('SUPERSEDE', in_array('--supersede', $argv ?? [], true));
+
 const SUCCESS_CODES = ['DuelES', 'DuelSale', 'ElecSale', 'ESsale', 'FuelES', 'GasSale'];
 const CANCEL_CODES  = ['VoidBadExp', 'VoidChgMnd', 'VoidDDDate', 'VoidDDQues', 'VoidDeadLn', 'VoidDebt', 'VoidLangBr', 'VoidNoCon', 'VoidNoDMC', 'VoidSwitch', 'VoidWrgDet', 'Vulnerable'];
 
@@ -98,7 +109,7 @@ if ($occErr) {
     $occupancy = [];
 }
 
-// ── Fetch per-day occupancy (for the <7.5h-per-day trigger) ──
+// ── Fetch per-day occupancy (for the <7h-per-day trigger) ──
 log_msg("Fetching per-day occupancy...");
 $perDayLogOn = [];  // [agentName => [YYYY-MM-DD => seconds]]
 for ($d = clone $start; $d <= $end; $d->modify('+1 day')) {
@@ -209,6 +220,7 @@ if (isset($prevStatuses['_error'])) {
     $monitored = [];
     $watchlist = [];
     $resets    = [];
+    $skipped   = [];
 
     // Build the set of agents to assess: anyone who appears in this week's occupancy data
     // OR anyone with an existing status row (so they keep progressing/resetting if absent).
@@ -230,14 +242,32 @@ if (isset($prevStatuses['_error'])) {
 
         $prev = $prevStatuses[$name] ?? null;
         $prevStage = $prev['current_stage'] ?? 'none';
-        $result = applyStateMachine($prev, $eval['triggered'], $end);
+
+        // Stage progression is not idempotent - applying it twice for the same
+        // week advances the agent twice. Re-running the report (manual dispatch,
+        // a retry after a failure, or regenerating an older week) must rebuild
+        // the email without moving anyone on, so reuse the stored status once
+        // the agent has been assessed up to this week or beyond.
+        $lastAssessed = $prev['last_assessed_week'] ?? null;
+        $alreadyAssessed = $lastAssessed !== null && $lastAssessed >= $weekEndIso;
+        if ($alreadyAssessed) $skipped[] = $name;
+
+        $result = $alreadyAssessed
+            ? ['status' => prodStatusFromRow($prev), 'transition' => null]
+            : applyStateMachine($prev, $eval['triggered'], $end);
         $newStage = $result['status']['current_stage'];
 
-        // Persist (best-effort)
-        $err = saveWeeklyTrigger($name, $weekStartIso, $weekEndIso, $eval);
-        if ($err) log_msg("WARNING: weekly_triggers save failed for $name: $err");
-        $err = saveProductivityStatus($name, $result['status']);
-        if ($err) log_msg("WARNING: productivity_status save failed for $name: $err");
+        // Persist (best-effort). weekly_triggers just restates this week's
+        // figures, so rewriting it on a re-run is harmless; the status row is
+        // left alone when the stage was not progressed. Preview writes nothing.
+        if (!PREVIEW) {
+            $err = saveWeeklyTrigger($name, $weekStartIso, $weekEndIso, $eval);
+            if ($err) log_msg("WARNING: weekly_triggers save failed for $name: $err");
+            if (!$alreadyAssessed) {
+                $err = saveProductivityStatus($name, $result['status']);
+                if ($err) log_msg("WARNING: productivity_status save failed for $name: $err");
+            }
+        }
 
         // Classify for the email section
         if ($newStage !== 'none') {
@@ -247,6 +277,11 @@ if (isset($prevStatuses['_error'])) {
         } elseif ($eval['triggered'] && $prevStage === 'none' && $result['status']['consecutive_trigger_weeks'] === 1) {
             $watchlist[] = ['name' => $name, 'eval' => $eval];
         }
+    }
+
+    if ($skipped) {
+        log_msg('Stage progression skipped for ' . count($skipped) . ' agent(s) already assessed up to '
+            . "$weekEndIso (re-run): " . implode(', ', $skipped));
     }
 
     // Sort monitored agents by stage severity (Final first)
@@ -414,11 +449,18 @@ function buildHtml($rows, $team, $cancelReasons, $productivitySection, $start, $
     // ── Body container ──
     $h .= "<div style=\"background:#ffffff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 12px 12px;padding:28px\">";
 
+    // ── Correction banner (one-off re-issue) ──
+    if (SUPERSEDE) {
+        $h .= "<div style=\"background:#fef5e7;border-left:4px solid #f39c12;padding:12px 16px;border-radius:4px;margin-bottom:8px;font-size:0.9rem;color:#7a4d00\">"
+            . "<b>Please note:</b> this corrects and replaces the report sent earlier today. The daily log-on threshold has been updated from 7.5 to 7 hours, and the figures below reflect that change."
+            . "</div>";
+    }
+
     // ── KPI cards ──
     $h .= renderKpiCards($team);
 
     // ── Greeting + narrative ──
-    $h .= "<p style=\"margin-top:24px\">Hi both,</p>";
+    $h .= "<p style=\"margin-top:24px\">Hi all,</p>";
     $h .= "<p>Please find below the verifications team's productivity for the week of <b>$rangeStr</b>.</p>";
     foreach (buildNarrative($rows, $team, $cancelReasons) as $para) {
         $h .= "<p>$para</p>";
@@ -539,7 +581,7 @@ function sendEmail($html, $start, $end) {
 
         $mail->setFrom(EMAIL_FROM, EMAIL_FROM_NAME);
         $mail->addAddress(EMAIL_FROM);  // Ryan
-        if (!TEST_MODE) {
+        if (!TEST_MODE && !PREVIEW) {
             $mail->addCC(EMAIL_TO);     // Tina
             $mail->addCC(EMAIL_CC);     // Tom
             $mail->addCC('adam.kirk@dwmas.co.uk');
@@ -548,12 +590,13 @@ function sendEmail($html, $start, $end) {
             $mail->addCC('hannad.barre@dwmas.co.uk');
         }
 
-        $mail->Subject = "Verifications Weekly Productivity Report - $rangeStr";
+        $mail->Subject = (PREVIEW ? '[PREVIEW] ' : '') . "Verifications Weekly Productivity Report - $rangeStr";
         $mail->isHTML(true);
         $mail->Body = $html;
 
         $mail->send();
-        log_msg("Email sent successfully" . (TEST_MODE ? ' (test mode — Ryan only)' : ''));
+        $only = (TEST_MODE || PREVIEW) ? ' (Ryan only' . (PREVIEW ? ', preview — no data written' : '') . ')' : '';
+        log_msg("Email sent successfully" . $only);
     } catch (Exception $e) {
         log_msg("EMAIL ERROR: " . $mail->ErrorInfo);
         exit(1);
