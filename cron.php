@@ -57,6 +57,15 @@ if (isset($argv[1]) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $argv[1])) {
     }
 }
 
+// Optional one-off note prepended to the email body (manual backfills only,
+// e.g. resending a delayed day). Inert when the flag is absent.
+$note = '';
+foreach ($argv as $arg) {
+    if (strncmp($arg, '--note=', 7) === 0) {
+        $note = substr($arg, 7);
+    }
+}
+
 $mcDate = $targetDate->format('d/m/Y');
 $displayDate = $mcDate;
 $dateStr = $targetDate->format('dmy');
@@ -107,10 +116,10 @@ if ($statsError) {
 // ── Send email ──
 if ($rowCount === 0) {
     log_msg("No rows — sending 'nothing to report' email...");
-    sendEmail($displayDate, null, null, true, null);
+    sendEmail($displayDate, null, null, true, null, $note);
 } else {
     log_msg("Sending email with attachment ($filename)...");
-    sendEmail($displayDate, $csvContent, $filename, false, $reviewUrl);
+    sendEmail($displayDate, $csvContent, $filename, false, $reviewUrl, $note);
 }
 
 log_msg("Done.");
@@ -185,7 +194,7 @@ function processCLI($csvString) {
     return [$csvContent, count($result)];
 }
 
-function sendEmail($displayDate, $csvContent, $filename, $nothingToReport, $reviewUrl) {
+function sendEmail($displayDate, $csvContent, $filename, $nothingToReport, $reviewUrl, $note = '') {
     $mail = new PHPMailer(true);
     try {
         $mail->isSMTP();
@@ -206,13 +215,17 @@ function sendEmail($displayDate, $csvContent, $filename, $nothingToReport, $revi
 
         $signature = 'Kind regards,<br><br>Ryan Lancaster<br><b>Technical Product Manager<br>DWM Administration Services</b>';
 
+        $noteBlock = $note !== ''
+            ? "<div style=\"background:#fef5e7;border-left:4px solid #f39c12;padding:12px 16px;border-radius:4px;margin-bottom:16px;font-size:0.9rem;color:#7a4d00\">$note</div>"
+            : '';
+
         if ($nothingToReport) {
-            $mail->Body = "Hi Tina,<br><br>Nothing to report today.<br><br>$signature";
+            $mail->Body = "Hi Tina,<br><br>{$noteBlock}Nothing to report today.<br><br>$signature";
         } else {
             $reviewLine = $reviewUrl
                 ? "Please review these attempts here: <a href=\"$reviewUrl\">Review Attempts</a><br><br>"
                 : '';
-            $mail->Body = "Hi Tina,<br><br>Please see attached.<br><br>{$reviewLine}{$signature}";
+            $mail->Body = "Hi Tina,<br><br>{$noteBlock}Please see attached.<br><br>{$reviewLine}{$signature}";
             $mail->addStringAttachment($csvContent, $filename, 'base64', 'text/csv');
         }
 
