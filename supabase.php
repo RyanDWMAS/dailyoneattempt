@@ -7,6 +7,37 @@
  */
 
 /**
+ * Parse the processed daily CSV into attempt records for a session.
+ *
+ * @param string $csvContent  Processed CSV string (with header row)
+ * @param mixed  $sessionId   review_sessions.id to attach each attempt to
+ * @return array List of attempt rows (empty if there are no data rows)
+ */
+function csvToAttempts($csvContent, $sessionId) {
+    $lines = explode("\n", trim($csvContent));
+    $header = str_getcsv(array_shift($lines));
+    $header = array_map('trim', $header);
+    $colMap = array_flip($header);
+
+    $attempts = [];
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $row = str_getcsv($line);
+
+        $attempts[] = [
+            'session_id'    => $sessionId,
+            'startdatetime' => $row[$colMap['startdatetime']] ?? '',
+            'fullname'      => $row[$colMap['fullname']] ?? '',
+            'resultcode'    => $row[$colMap['resultcodedescription']] ?? '',
+            'phonenumber'   => $row[$colMap['phonenumber']] ?? '',
+            'disconnector'  => $row[$colMap['disconnector']] ?? '',
+        ];
+    }
+    return $attempts;
+}
+
+/**
  * Create a review session and insert all attempts into Supabase.
  *
  * @param string $reportDate  Date in YYYY-MM-DD format
@@ -24,10 +55,33 @@ function createReviewSession($reportDate, $csvContent, $rowCount) {
     }
 
     // Check if a session already exists for this date
-    $existing = supabaseGet($supabaseUrl, $serviceKey, 'review_sessions', 'report_date=eq.' . $reportDate . '&select=token,total_rows&limit=1');
+    $existing = supabaseGet($supabaseUrl, $serviceKey, 'review_sessions', 'report_date=eq.' . $reportDate . '&select=id,token,total_rows&limit=1');
     if (!empty($existing['data'])) {
+        $existingId    = $existing['data'][0]['id'];
         $existingToken = $existing['data'][0]['token'];
-        $existingRows = (int) $existing['data'][0]['total_rows'];
+        $existingRows  = (int) $existing['data'][0]['total_rows'];
+
+        // Self-heal a poisoned placeholder. An earlier premature run for this
+        // date (e.g. a GitHub schedule delay that fired before dialling had any
+        // data) can leave a session with 0 rows. If this run actually has rows,
+        // upgrade the existing session in place — otherwise it would return a
+        // dead null link and silently drop the real attempts.
+        if ($existingRows === 0 && $rowCount > 0) {
+            $patch = supabasePatch($supabaseUrl, $serviceKey, 'review_sessions',
+                'token=eq.' . $existingToken, ['total_rows' => $rowCount]);
+            if ($patch['error']) {
+                return [null, 'Failed to upgrade review session: ' . $patch['error']];
+            }
+            $attempts = csvToAttempts($csvContent, $existingId);
+            if (!empty($attempts)) {
+                $result = supabasePost($supabaseUrl, $serviceKey, 'attempts', $attempts);
+                if ($result['error']) {
+                    return [null, 'Failed to insert attempts: ' . $result['error']];
+                }
+            }
+            return [rtrim($pagesUrl, '/') . '/review.html?token=' . $existingToken, null];
+        }
+
         $reviewUrl = $existingRows > 0
             ? rtrim($pagesUrl, '/') . '/review.html?token=' . $existingToken
             : null;
@@ -56,28 +110,7 @@ function createReviewSession($reportDate, $csvContent, $rowCount) {
 
     // Parse CSV rows into attempt records (skip if no rows)
     if ($rowCount > 0) {
-        $lines = explode("\n", trim($csvContent));
-        $header = str_getcsv(array_shift($lines));
-        $header = array_map('trim', $header);
-
-        $colMap = array_flip($header);
-        $attempts = [];
-
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line === '') continue;
-            $row = str_getcsv($line);
-
-            $attempts[] = [
-                'session_id'    => $sessionId,
-                'startdatetime' => $row[$colMap['startdatetime']] ?? '',
-                'fullname'      => $row[$colMap['fullname']] ?? '',
-                'resultcode'    => $row[$colMap['resultcodedescription']] ?? '',
-                'phonenumber'   => $row[$colMap['phonenumber']] ?? '',
-                'disconnector'  => $row[$colMap['disconnector']] ?? '',
-            ];
-        }
-
+        $attempts = csvToAttempts($csvContent, $sessionId);
         if (!empty($attempts)) {
             $result = supabasePost($supabaseUrl, $serviceKey, 'attempts', $attempts);
             if ($result['error']) {

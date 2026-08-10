@@ -43,11 +43,18 @@ use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
 // ── Determine target date ──
+// GitHub Actions runs scheduled jobs on a best-effort basis and can delay the
+// 21:00 run by hours — occasionally past midnight. A run landing in the small
+// hours (before noon UTC) is treated as a delayed evening run and reports the
+// previous day, so the day that just finished dialling is always the one
+// reported. (Matches the guard in endshift-report.php.)
 if (isset($argv[1]) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $argv[1])) {
     $targetDate = new DateTime($argv[1]);
 } else {
-    // Default to today — run after 20:30 to capture the full day's data
-    $targetDate = new DateTime();
+    $targetDate = new DateTime('now', new DateTimeZone('UTC'));
+    if ((int) $targetDate->format('H') < 12) {
+        $targetDate->modify('-1 day');
+    }
 }
 
 $mcDate = $targetDate->format('d/m/Y');
