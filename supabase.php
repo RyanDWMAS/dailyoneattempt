@@ -165,6 +165,14 @@ function storeCallStats($reportDate, $rawCsv) {
     $patchResult = supabasePatch($supabaseUrl, $serviceKey, 'review_sessions', 'id=eq.' . $sessionId, ['total_calls' => $totalCalls]);
     if ($patchResult['error']) return 'Failed to update total_calls: ' . $patchResult['error'];
 
+    // Clear any existing stats for this date first, so a re-run replaces rather
+    // than duplicates them. storeCallStats INSERTs (not upserts), and a day can
+    // legitimately be run twice — e.g. a schedule-delayed run followed by the
+    // on-time one — which would otherwise double every agent's calls and inflate
+    // the monthly report.
+    $delResult = supabaseDelete($supabaseUrl, $serviceKey, 'daily_agent_stats', 'report_date=eq.' . $reportDate);
+    if ($delResult['error']) return 'Failed to clear existing agent stats: ' . $delResult['error'];
+
     // Insert per-agent stats
     $agentRows = [];
     foreach ($agentCounts as $name => $count) {
@@ -197,6 +205,36 @@ function supabasePatch($baseUrl, $serviceKey, $table, $query, $data) {
         CURLOPT_POSTFIELDS     => json_encode($data),
         CURLOPT_HTTPHEADER     => [
             'Content-Type: application/json',
+            'apikey: ' . $serviceKey,
+            'Authorization: Bearer ' . $serviceKey,
+            'Prefer: return=minimal',
+        ],
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_TIMEOUT        => 15,
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError || $httpCode < 200 || $httpCode >= 300) {
+        return ['error' => $curlError ?: "HTTP $httpCode: $response"];
+    }
+    return ['error' => null];
+}
+
+/**
+ * DELETE rows from a Supabase table via REST API.
+ */
+function supabaseDelete($baseUrl, $serviceKey, $table, $query) {
+    $url = rtrim($baseUrl, '/') . '/rest/v1/' . $table . '?' . $query;
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST  => 'DELETE',
+        CURLOPT_HTTPHEADER     => [
             'apikey: ' . $serviceKey,
             'Authorization: Bearer ' . $serviceKey,
             'Prefer: return=minimal',
