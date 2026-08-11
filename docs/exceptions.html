@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Log-on Exceptions</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            color: #1a1a2e;
+            background: #f4f5f7;
+            padding: 16px;
+        }
+        .wrap { max-width: 560px; margin: 0 auto; }
+        .header {
+            background: #4a6cf7;
+            background-image: linear-gradient(135deg, #4a6cf7 0%, #7c3aed 100%);
+            color: #fff;
+            padding: 22px 24px;
+            border-radius: 12px 12px 0 0;
+        }
+        .header h1 { margin: 0; font-size: 1.3rem; letter-spacing: -0.5px; }
+        .header p { margin: 6px 0 0; font-size: 0.9rem; opacity: 0.9; }
+        .card {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 12px 12px;
+            padding: 24px;
+        }
+        label { display: block; font-weight: 600; font-size: 0.85rem; margin: 14px 0 6px; color: #444; }
+        label:first-of-type { margin-top: 0; }
+        select, input, textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-family: inherit;
+            background: #fff;
+        }
+        textarea { resize: vertical; min-height: 60px; }
+        .btn {
+            margin-top: 20px;
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: #4a6cf7;
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn:hover { background: #3d5ce0; }
+        .btn:disabled { background: #b8c0d9; cursor: not-allowed; }
+        .toast {
+            margin-top: 14px;
+            padding: 11px 14px;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            display: none;
+        }
+        .toast.ok  { background: #eafaf1; color: #1d6f42; border-left: 3px solid #27ae60; display: block; }
+        .toast.err { background: #fdecea; color: #c0392b; border-left: 3px solid #e74c3c; display: block; }
+        .recent { max-width: 560px; margin: 20px auto 0; }
+        .recent h2 { font-size: 0.95rem; color: #555; margin: 0 0 10px; }
+        .exc {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            background: #fff;
+            border: 1px solid #e8e8e8;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 8px;
+            font-size: 0.88rem;
+        }
+        .exc .who { font-weight: 600; }
+        .exc .meta { color: #777; font-size: 0.8rem; }
+        .exc .reason-tag {
+            display: inline-block;
+            background: #eef1fb;
+            color: #3d5ce0;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-left: 6px;
+        }
+        .del {
+            border: none;
+            background: none;
+            color: #c0392b;
+            cursor: pointer;
+            font-size: 1.1rem;
+            padding: 4px 6px;
+            border-radius: 6px;
+        }
+        .del:hover { background: #fdecea; }
+        .muted { color: #999; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+<div class="wrap">
+    <div class="header">
+        <h1>Log-on Exceptions</h1>
+        <p>Excuse a short day so it doesn't count toward the productivity report &mdash; e.g. sickness, an appointment, or a half-day shift.</p>
+    </div>
+    <div class="card">
+        <label for="agent">Agent</label>
+        <select id="agent"><option value="">Loading agents&hellip;</option></select>
+
+        <label for="date">Date</label>
+        <input type="date" id="date">
+
+        <label for="reason">Reason</label>
+        <select id="reason">
+            <option value="sickness">Sickness</option>
+            <option value="appointment">Appointment</option>
+            <option value="half_day">Half-day shift</option>
+            <option value="approved_early">Approved early leave</option>
+            <option value="other">Other</option>
+        </select>
+
+        <label for="note">Note (optional)</label>
+        <textarea id="note" placeholder="Any detail worth recording&hellip;"></textarea>
+
+        <button class="btn" id="submit">Log exception</button>
+        <div class="toast" id="toast"></div>
+    </div>
+</div>
+
+<div class="recent">
+    <h2>Recently logged</h2>
+    <div id="recent-list"><p class="muted">Loading&hellip;</p></div>
+</div>
+
+<script src="js/supabase-config.js"></script>
+<script src="js/exceptions.js"></script>
+</body>
+</html>
