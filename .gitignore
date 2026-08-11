@@ -1,2 +1,7 @@
 vendor/
 config.php
+
+# Local data backups / archives — never commit HR or call data to the repo
+*_archive_*.json
+*_backup*.json
+history_*.csv

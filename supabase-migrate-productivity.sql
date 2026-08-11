@@ -6,7 +6,7 @@
 --
 -- Triggers (any of these in a week breaches productivity):
 --   1. Not Ready > 3% of log-on time
---   2. Break > 8% of log-on time
+--   2. Break > 9.5% of log-on time (excluding Meeting break time)
 --   3. Wrap > 2% of log-on time
 --   4. Log-on < 7h on any worked day
 --

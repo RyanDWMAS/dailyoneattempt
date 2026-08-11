@@ -31,6 +31,7 @@ if (file_exists(__DIR__ . '/config.php')) {
     define('MC_CAMPAIGN_ID', (int) getenv('MC_CAMPAIGN_ID'));
     define('SUPABASE_URL',         getenv('SUPABASE_URL'));
     define('SUPABASE_SERVICE_KEY', getenv('SUPABASE_SERVICE_KEY'));
+    define('PAGES_URL',            getenv('PAGES_URL'));
 }
 
 use PHPMailer\PHPMailer\PHPMailer;
@@ -44,6 +45,17 @@ const TEST_MODE = false;
 // reviewed (e.g. after a threshold change) without progressing anyone's
 // disciplinary stage or touching the audit trail.
 define('PREVIEW', in_array('--preview', $argv ?? [], true));
+
+// ── Preliminary review mode (php verifications-report.php --preliminary) ──
+// The first of the two Monday runs: sends to Tina only (Ryan BCC'd) with a
+// review banner, and writes NOTHING. She logs any approved short-day
+// exceptions; the afternoon final run then assesses with those applied and
+// sends to everyone. Keeping it write-free means stages only ever advance
+// once, on the final run, after exceptions are in — no retroactive un-doing.
+define('PRELIMINARY', in_array('--preliminary', $argv ?? [], true));
+
+// Neither the preview nor the preliminary run commits anything to Supabase.
+define('NO_COMMIT', PREVIEW || PRELIMINARY);
 
 // ── Supersede banner (php verifications-report.php ... --supersede) ──
 // Adds a one-off note that this re-issue corrects a version already sent —
@@ -109,20 +121,39 @@ if ($occErr) {
     $occupancy = [];
 }
 
-// ── Fetch per-day occupancy (for the <7h-per-day trigger) ──
-log_msg("Fetching per-day occupancy...");
-$perDayLogOn = [];  // [agentName => [YYYY-MM-DD => seconds]]
+// ── Fetch per-day occupancy (for the <7h-per-day trigger) and per-day
+//    activity (to net Meeting time out of Break time) ──
+// Meeting break time is only visible in the Activity Summary (event-level),
+// and that parser is single-day only, so we fetch it per day and accumulate
+// each agent's Meeting seconds to subtract from their weekly Break Time.
+log_msg("Fetching per-day occupancy and activity...");
+$perDayLogOn    = [];  // [agentName => [YYYY-MM-DD => seconds]]
+$meetingSeconds = [];  // [agentName => total 'Meeting' break seconds for the week]
 for ($d = clone $start; $d <= $end; $d->modify('+1 day')) {
     $dayStartIso = $d->format('Y-m-d') . 'T00:00:00';
     $dayEndIso   = (clone $d)->modify('+1 day')->format('Y-m-d') . 'T00:00:00';
+
     [$dayOcc, $dayErr] = fetchOccupancyReport($dayStartIso, $dayEndIso, [(string) MC_CAMPAIGN_ID]);
     if ($dayErr) {
         log_msg("Daily occupancy fetch failed for {$d->format('d/m/Y')}: $dayErr");
+    } else {
+        foreach ($dayOcc as $name => $data) {
+            if (!empty($data['log_on'])) {
+                $perDayLogOn[$name][$d->format('Y-m-d')] = parseHmsTime($data['log_on']);
+            }
+        }
+    }
+
+    [$dayAct, $actErr] = fetchActivitySummary($dayStartIso, $dayEndIso, [(string) MC_CAMPAIGN_ID]);
+    if ($actErr) {
+        log_msg("Daily activity fetch failed for {$d->format('d/m/Y')}: $actErr (Meeting time not netted out for this day)");
         continue;
     }
-    foreach ($dayOcc as $name => $data) {
-        if (!empty($data['log_on'])) {
-            $perDayLogOn[$name][$d->format('Y-m-d')] = parseHmsTime($data['log_on']);
+    foreach ($dayAct as $name => $a) {
+        foreach ($a['events'] as $e) {
+            if ($e['type'] === 'Meeting') {
+                $meetingSeconds[$name] = ($meetingSeconds[$name] ?? 0) + parseHmsTime($e['duration']);
+            }
         }
     }
 }
@@ -193,6 +224,8 @@ $rows = [];
 foreach ($agents as $name => $data) {
     $wrap  = isset($occupancy[$name]['wrap'])  ? parseHmsTime($occupancy[$name]['wrap'])  : 0;
     $break = isset($occupancy[$name]['break']) ? parseHmsTime($occupancy[$name]['break']) : 0;
+    // Company-mandated Meeting time is excluded from the break stat.
+    $break = max(0, $break - ($meetingSeconds[$name] ?? 0));
     $team['wrap_seconds']  += $wrap;
     $team['break_seconds'] += $break;
     $rows[] = [
@@ -217,6 +250,16 @@ if (isset($prevStatuses['_error'])) {
 } else {
     $weekStartIso = $start->format('Y-m-d');
     $weekEndIso   = $end->format('Y-m-d');
+
+    // Excused short days (approved sickness, half-days, appointments) for this
+    // week, keyed [agentName => ['YYYY-MM-DD' => reason]]. Degrade gracefully if
+    // the table isn't migrated yet, so the report never breaks on its absence.
+    $exceptions = loadLogonExceptions($weekStartIso, $weekEndIso);
+    if (isset($exceptions['_error'])) {
+        log_msg("EXCEPTIONS WARNING: could not load log-on exceptions: " . $exceptions['_error'] . " (proceeding with none)");
+        $exceptions = [];
+    }
+
     $monitored = [];
     $watchlist = [];
     $resets    = [];
@@ -227,18 +270,26 @@ if (isset($prevStatuses['_error'])) {
     $agentNames = array_unique(array_merge(array_keys($occupancy), array_keys($prevStatuses)));
 
     foreach ($agentNames as $name) {
+        $agentExcused = $exceptions[$name] ?? [];       // ['YYYY-MM-DD' => reason]
+        $excusedDates = array_keys($agentExcused);
+
         if (!isset($occupancy[$name])) {
             // No occupancy data this week - treat as no trigger so stages can still reset
             $eval = ['triggered' => false, 'reasons' => [], 'not_ready_pct' => 0, 'break_pct' => 0, 'wrap_pct' => 0, 'short_login_days' => 0, 'log_on_seconds' => 0];
         } else {
             $occ = $occupancy[$name];
+            // Net company-mandated Meeting time out of Break before the % test.
+            $breakSecs = max(0, parseHmsTime($occ['break'] ?? '') - ($meetingSeconds[$name] ?? 0));
             $eval = evaluateTriggers([
                 'log_on'    => parseHmsTime($occ['log_on']    ?? ''),
                 'not_ready' => parseHmsTime($occ['not_ready'] ?? ''),
-                'break'     => parseHmsTime($occ['break']     ?? ''),
+                'break'     => $breakSecs,
                 'wrap'      => parseHmsTime($occ['wrap']      ?? ''),
-            ], $perDayLogOn[$name] ?? []);
+            ], $perDayLogOn[$name] ?? [], $excusedDates);
         }
+
+        // Short-day breakdown (date + hours + excused reason) for the email.
+        $shortDays = shortDayDetails($perDayLogOn[$name] ?? [], $agentExcused);
 
         $prev = $prevStatuses[$name] ?? null;
         $prevStage = $prev['current_stage'] ?? 'none';
@@ -259,9 +310,10 @@ if (isset($prevStatuses['_error'])) {
 
         // Persist (best-effort). weekly_triggers just restates this week's
         // figures, so rewriting it on a re-run is harmless; the status row is
-        // left alone when the stage was not progressed. Preview writes nothing.
-        if (!PREVIEW) {
-            $err = saveWeeklyTrigger($name, $weekStartIso, $weekEndIso, $eval);
+        // left alone when the stage was not progressed. Preview and the
+        // preliminary review run write nothing.
+        if (!NO_COMMIT) {
+            $err = saveWeeklyTrigger($name, $weekStartIso, $weekEndIso, $eval, $excusedDates);
             if ($err) log_msg("WARNING: weekly_triggers save failed for $name: $err");
             if (!$alreadyAssessed) {
                 $err = saveProductivityStatus($name, $result['status']);
@@ -271,11 +323,11 @@ if (isset($prevStatuses['_error'])) {
 
         // Classify for the email section
         if ($newStage !== 'none') {
-            $monitored[] = ['name' => $name, 'status' => $result['status'], 'eval' => $eval];
+            $monitored[] = ['name' => $name, 'status' => $result['status'], 'eval' => $eval, 'short_days' => $shortDays];
         } elseif ($result['transition'] === 'reset') {
             $resets[] = ['name' => $name, 'prev_stage' => $prevStage];
         } elseif ($eval['triggered'] && $prevStage === 'none' && $result['status']['consecutive_trigger_weeks'] === 1) {
-            $watchlist[] = ['name' => $name, 'eval' => $eval];
+            $watchlist[] = ['name' => $name, 'eval' => $eval, 'short_days' => $shortDays];
         }
     }
 
@@ -284,11 +336,18 @@ if (isset($prevStatuses['_error'])) {
             . "$weekEndIso (re-run): " . implode(', ', $skipped));
     }
 
+    // Keep the exceptions-form roster in step with this week's agents.
+    if (!NO_COMMIT) {
+        $err = saveProductivityAgents(array_keys($occupancy));
+        if ($err) log_msg("WARNING: productivity_agents upsert failed: $err");
+    }
+
     // Sort monitored agents by stage severity (Final first)
     $stageOrder = ['final' => 0, 'second' => 1, 'first' => 2, 'informal' => 3];
     usort($monitored, fn($a, $b) => $stageOrder[$a['status']['current_stage']] <=> $stageOrder[$b['status']['current_stage']]);
 
-    $productivitySection = renderProductivitySection($monitored, $watchlist, $resets);
+    $exceptionsUrl = (defined('PAGES_URL') && PAGES_URL) ? rtrim(PAGES_URL, '/') . '/exceptions.html' : '';
+    $productivitySection = renderProductivitySection($monitored, $watchlist, $resets, $exceptionsUrl);
 }
 
 // ── Build email HTML ──
@@ -449,6 +508,15 @@ function buildHtml($rows, $team, $cancelReasons, $productivitySection, $start, $
     // ── Body container ──
     $h .= "<div style=\"background:#ffffff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 12px 12px;padding:28px\">";
 
+    // ── Preliminary review banner (Tina's review copy, before the team send) ──
+    if (PRELIMINARY) {
+        $exUrl = (defined('PAGES_URL') && PAGES_URL) ? rtrim(PAGES_URL, '/') . '/exceptions.html' : '';
+        $link = $exUrl ? " &nbsp;<a href=\"$exUrl\" style=\"color:#4a6cf7;font-weight:700;text-decoration:none\">Log an exception &rarr;</a>" : '';
+        $h .= "<div style=\"background:#eef1fb;border-left:4px solid #4a6cf7;padding:14px 16px;border-radius:4px;margin-bottom:16px;font-size:0.9rem;color:#26365f\">"
+            . "<b>Preliminary &mdash; for your review.</b> This has not gone to the team yet. Please check the short days flagged under Productivity Triggers and log any that were approved (sickness, appointment, half-day) before the final report is sent this afternoon.$link"
+            . "</div>";
+    }
+
     // ── Correction banner (one-off re-issue) ──
     if (SUPERSEDE) {
         $h .= "<div style=\"background:#fef5e7;border-left:4px solid #f39c12;padding:12px 16px;border-radius:4px;margin-bottom:8px;font-size:0.9rem;color:#7a4d00\">"
@@ -580,22 +648,36 @@ function sendEmail($html, $start, $end) {
         $mail->Port       = SMTP_PORT;
 
         $mail->setFrom(EMAIL_FROM, EMAIL_FROM_NAME);
-        $mail->addAddress(EMAIL_FROM);  // Ryan
-        if (!TEST_MODE && !PREVIEW) {
-            $mail->addCC(EMAIL_TO);     // Tina
-            $mail->addCC(EMAIL_CC);     // Tom
-            $mail->addCC('adam.kirk@dwmas.co.uk');
-            $mail->addCC('liam.tustin@dwmas.co.uk');
-            $mail->addCC('nick.mangan@dwmas.co.uk');
-            $mail->addCC('hannad.barre@dwmas.co.uk');
+        if (PREVIEW) {
+            // Preview always wins on recipients — it never leaves Ryan's inbox,
+            // even when combined with --preliminary to check that format.
+            $mail->addAddress(EMAIL_FROM);  // Ryan only
+        } elseif (PRELIMINARY) {
+            // Preliminary review copy — Tina only, Ryan BCC'd for oversight.
+            $mail->addAddress(EMAIL_TO);    // Tina
+            $mail->addBCC(EMAIL_FROM);      // Ryan
+        } else {
+            $mail->addAddress(EMAIL_FROM);  // Ryan
+            if (!TEST_MODE) {
+                $mail->addCC(EMAIL_TO);     // Tina
+                $mail->addCC(EMAIL_CC);     // Tom
+                $mail->addCC('adam.kirk@dwmas.co.uk');
+                $mail->addCC('liam.tustin@dwmas.co.uk');
+                $mail->addCC('nick.mangan@dwmas.co.uk');
+                $mail->addCC('hannad.barre@dwmas.co.uk');
+            }
         }
 
-        $mail->Subject = (PREVIEW ? '[PREVIEW] ' : '') . "Verifications Weekly Productivity Report - $rangeStr";
+        $prefix = PREVIEW ? '[PREVIEW] ' : (PRELIMINARY ? '[FOR REVIEW] ' : '');
+        $mail->Subject = $prefix . "Verifications Weekly Productivity Report - $rangeStr";
         $mail->isHTML(true);
         $mail->Body = $html;
 
         $mail->send();
-        $only = (TEST_MODE || PREVIEW) ? ' (Ryan only' . (PREVIEW ? ', preview — no data written' : '') . ')' : '';
+        if (PREVIEW)         $only = ' (Ryan only, preview — no data written)';
+        elseif (PRELIMINARY) $only = ' (Tina only, preliminary review — no data written)';
+        elseif (TEST_MODE)   $only = ' (Ryan only)';
+        else                 $only = '';
         log_msg("Email sent successfully" . $only);
     } catch (Exception $e) {
         log_msg("EMAIL ERROR: " . $mail->ErrorInfo);

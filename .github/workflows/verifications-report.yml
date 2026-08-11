@@ -2,8 +2,16 @@ name: Verifications Weekly Productivity Report
 
 on:
   schedule:
-    # 06:00 UTC every Monday (07:00 BST / 06:00 GMT)
-    - cron: '0 6 * * 1'
+    # Two Monday runs. Tina isn't in over the weekend, so:
+    #   1. Preliminary (09:00 UTC / 10:00 BST) — goes to Tina only and writes
+    #      nothing. It shows her the week's short days (including Saturday) so
+    #      she can log any approved exceptions via the form.
+    #   2. Final (14:15 UTC / 15:15 BST) — re-assesses with those exceptions
+    #      applied, commits, and sends to the whole team. Stages only ever
+    #      advance on this run, so a review-then-excuse never needs undoing.
+    # The odd minute on the final run avoids the contended top-of-hour.
+    - cron: '0 9 * * 1'
+    - cron: '15 14 * * 1'
   workflow_dispatch:
     inputs:
       start:
@@ -12,6 +20,14 @@ on:
       end:
         description: 'End date (YYYY-MM-DD), Saturday'
         required: false
+      mode:
+        description: 'final sends to the team; preliminary is a Tina-only review'
+        required: false
+        default: final
+        type: choice
+        options:
+          - final
+          - preliminary
 
 jobs:
   run-report:
@@ -46,9 +62,14 @@ jobs:
           MC_CAMPAIGN_ID: ${{ secrets.MC_CAMPAIGN_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PAGES_URL: ${{ secrets.PAGES_URL }}
         run: |
-          ARGS=""
-          if [ -n "${{ github.event.inputs.start }}" ] && [ -n "${{ github.event.inputs.end }}" ]; then
-            ARGS="${{ github.event.inputs.start }} ${{ github.event.inputs.end }}"
+          if [ "${{ github.event.schedule }}" = "0 9 * * 1" ] || [ "${{ github.event.inputs.mode }}" = "preliminary" ]; then
+            php verifications-report.php --preliminary
+          else
+            ARGS=""
+            if [ -n "${{ github.event.inputs.start }}" ] && [ -n "${{ github.event.inputs.end }}" ]; then
+              ARGS="${{ github.event.inputs.start }} ${{ github.event.inputs.end }}"
+            fi
+            php verifications-report.php $ARGS
           fi
-          php verifications-report.php $ARGS
