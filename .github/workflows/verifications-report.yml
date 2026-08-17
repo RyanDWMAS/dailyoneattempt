@@ -4,7 +4,7 @@ on:
   # Fired punctually by the server cron (scripts/trigger-report.sh) via the
   # GitHub API. GitHub's own schedule: cron proved too unreliable — routinely
   # delayed by hours — so the box's crontab dispatches the runs instead:
-  # preliminary (Mon 10:00) then final (Mon 15:15), UK time. 'preview' is a
+  # preliminary (Mon 10:00) then final (Mon 14:00), UK time. 'preview' is a
   # manual Ryan-only test.
   workflow_dispatch:
     inputs:
