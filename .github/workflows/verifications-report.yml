@@ -1,17 +1,11 @@
 name: Verifications Weekly Productivity Report
 
 on:
-  schedule:
-    # Two Monday runs. Tina isn't in over the weekend, so:
-    #   1. Preliminary (09:00 UTC / 10:00 BST) — goes to Tina only and writes
-    #      nothing. It shows her the week's short days (including Saturday) so
-    #      she can log any approved exceptions via the form.
-    #   2. Final (14:15 UTC / 15:15 BST) — re-assesses with those exceptions
-    #      applied, commits, and sends to the whole team. Stages only ever
-    #      advance on this run, so a review-then-excuse never needs undoing.
-    # The odd minute on the final run avoids the contended top-of-hour.
-    - cron: '0 9 * * 1'
-    - cron: '15 14 * * 1'
+  # Fired punctually by the server cron (scripts/trigger-report.sh) via the
+  # GitHub API. GitHub's own schedule: cron proved too unreliable — routinely
+  # delayed by hours — so the box's crontab dispatches the runs instead:
+  # preliminary (Mon 10:00) then final (Mon 15:15), UK time. 'preview' is a
+  # manual Ryan-only test.
   workflow_dispatch:
     inputs:
       start:
@@ -66,7 +60,7 @@ jobs:
           PAGES_URL: ${{ secrets.PAGES_URL }}
         run: |
           MODE="${{ github.event.inputs.mode }}"
-          if [ "${{ github.event.schedule }}" = "0 9 * * 1" ] || [ "$MODE" = "preliminary" ]; then
+          if [ "$MODE" = "preliminary" ]; then
             php verifications-report.php --preliminary
           elif [ "$MODE" = "preview" ]; then
             php verifications-report.php --preview
