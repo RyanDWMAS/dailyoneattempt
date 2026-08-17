@@ -21,13 +21,14 @@ on:
         description: 'End date (YYYY-MM-DD), Saturday'
         required: false
       mode:
-        description: 'final sends to the team; preliminary is a Tina-only review'
+        description: 'final = team; preliminary = Tina-only review; preview = Ryan-only test (no writes)'
         required: false
         default: final
         type: choice
         options:
           - final
           - preliminary
+          - preview
 
 jobs:
   run-report:
@@ -64,8 +65,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           PAGES_URL: ${{ secrets.PAGES_URL }}
         run: |
-          if [ "${{ github.event.schedule }}" = "0 9 * * 1" ] || [ "${{ github.event.inputs.mode }}" = "preliminary" ]; then
+          MODE="${{ github.event.inputs.mode }}"
+          if [ "${{ github.event.schedule }}" = "0 9 * * 1" ] || [ "$MODE" = "preliminary" ]; then
             php verifications-report.php --preliminary
+          elif [ "$MODE" = "preview" ]; then
+            php verifications-report.php --preview
           else
             ARGS=""
             if [ -n "${{ github.event.inputs.start }}" ] && [ -n "${{ github.event.inputs.end }}" ]; then
