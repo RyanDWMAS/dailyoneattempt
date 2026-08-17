@@ -8,7 +8,7 @@
 --   1. Not Ready > 3% of log-on time
 --   2. Break > 9.5% of log-on time (excluding Meeting break time)
 --   3. Wrap > 2% of log-on time
---   4. Log-on < 7h on any worked day
+--   4. Log-on < 7h on any worked day (< 6.5h on Saturdays — shorter shift)
 --
 -- Note: Supabase's April 2026 visibility change means new tables in
 -- the public schema are no longer auto-exposed to the Data API. We

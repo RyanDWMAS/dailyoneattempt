@@ -6,7 +6,7 @@
  *   - Not Ready > 3% of log-on time
  *   - Break    > 9.5% of log-on time (excluding Meeting break time)
  *   - Wrap     > 2% of log-on time
- *   - Log-on   < 7h on any worked day
+ *   - Log-on   < 7h on any worked day (< 6.5h on Saturdays — shorter shift)
  *
  * Stage progression:
  *   None      -> Informal  (2 consecutive triggered weeks)
@@ -28,6 +28,8 @@ const PROD_THRESH_NOT_READY = 0.03;
 const PROD_THRESH_BREAK     = 0.095;
 const PROD_THRESH_WRAP      = 0.02;
 const PROD_MIN_DAILY_LOGON_SECONDS = 7 * 3600;
+// Saturday shifts are shorter, so a lower log-on bar applies on Saturdays.
+const PROD_MIN_SATURDAY_LOGON_SECONDS = 6 * 3600 + 1800;  // 6.5h
 
 const PROD_STAGE_WINDOWS = [
     'informal' => 28,
@@ -35,6 +37,19 @@ const PROD_STAGE_WINDOWS = [
     'second'   => 14,
     'final'    => 14,
 ];
+
+/**
+ * Minimum expected log-on for a given date. Saturday shifts are shorter, so a
+ * lower bar applies on Saturdays; every other worked day uses the standard one.
+ *
+ * @param string $date  'YYYY-MM-DD'
+ */
+function prodMinLogonForDate($date) {
+    // ISO-8601 day-of-week: 6 = Saturday.
+    return (new DateTime($date))->format('N') === '6'
+        ? PROD_MIN_SATURDAY_LOGON_SECONDS
+        : PROD_MIN_DAILY_LOGON_SECONDS;
+}
 
 /**
  * Evaluate this week's triggers for a single agent.
@@ -53,7 +68,7 @@ function evaluateTriggers($weekData, $perDayLogOn, $excusedDays = []) {
 
     $shortDays = 0;
     foreach ($perDayLogOn as $date => $sec) {
-        if ($sec > 0 && $sec < PROD_MIN_DAILY_LOGON_SECONDS && !in_array($date, $excusedDays, true)) {
+        if ($sec > 0 && $sec < prodMinLogonForDate($date) && !in_array($date, $excusedDays, true)) {
             $shortDays++;
         }
     }
@@ -338,7 +353,7 @@ function prodTriggerLabel($code) {
         'not_ready'   => 'Not Ready > 3%',
         'break'       => 'Break > 9.5%',
         'wrap'        => 'Wrap > 2%',
-        'short_login' => 'Log-on < 7h on at least one day',
+        'short_login' => 'Log-on < 7h (6.5h Sat) on at least one day',
         default       => $code,
     };
 }
@@ -465,7 +480,7 @@ function prodReasonPills($reasons) {
 function shortDayDetails($perDayLogOn, $agentExcused) {
     $out = [];
     foreach ($perDayLogOn as $date => $sec) {
-        if ($sec > 0 && $sec < PROD_MIN_DAILY_LOGON_SECONDS) {
+        if ($sec > 0 && $sec < prodMinLogonForDate($date)) {
             $out[] = [
                 'date'    => $date,
                 'seconds' => $sec,
