@@ -62,6 +62,10 @@ define('NO_COMMIT', PREVIEW || PRELIMINARY);
 // used when re-sending a week after a correction (e.g. a threshold change).
 define('SUPERSEDE', in_array('--supersede', $argv ?? [], true));
 
+// Agents to exclude from the report, team totals and trigger assessment
+// (non-calling staff)
+const EXCLUDED_AGENTS = ['Tina Tigere'];
+
 const SUCCESS_CODES = ['DuelES', 'DuelSale', 'ElecSale', 'ESsale', 'FuelES', 'GasSale'];
 const CANCEL_CODES  = ['VoidBadExp', 'VoidChgMnd', 'VoidDDDate', 'VoidDDQues', 'VoidDeadLn', 'VoidDebt', 'VoidLangBr', 'VoidNoCon', 'VoidNoDMC', 'VoidSwitch', 'VoidWrgDet', 'Vulnerable'];
 
@@ -120,6 +124,7 @@ if ($occErr) {
     log_msg("OCCUPANCY WARNING: $occErr (proceeding without wrap/break data)");
     $occupancy = [];
 }
+$occupancy = array_diff_key($occupancy, array_flip(EXCLUDED_AGENTS));
 
 // ── Fetch per-day occupancy (for the <7h-per-day trigger) and per-day
 //    activity (to net Meeting time out of Break time) ──
@@ -174,13 +179,13 @@ foreach ($idx as $k => $v) {
     }
 }
 
-// ── Aggregate per agent ──
+// ── Aggregate per agent (excluding non-calling staff) ──
 $agents = [];
 $cancelReasons = [];
 
 foreach ($allRows as $row) {
     $agent   = trim($row[$idx['fullname']] ?? '');
-    if ($agent === '') continue;
+    if ($agent === '' || in_array($agent, EXCLUDED_AGENTS, true)) continue;
 
     $rc      = trim($row[$idx['resultcode']] ?? '');
     $rcDesc  = trim($row[$idx['resultcodedescription']] ?? '');
@@ -267,7 +272,10 @@ if (isset($prevStatuses['_error'])) {
 
     // Build the set of agents to assess: anyone who appears in this week's occupancy data
     // OR anyone with an existing status row (so they keep progressing/resetting if absent).
-    $agentNames = array_unique(array_merge(array_keys($occupancy), array_keys($prevStatuses)));
+    $agentNames = array_diff(
+        array_unique(array_merge(array_keys($occupancy), array_keys($prevStatuses))),
+        EXCLUDED_AGENTS
+    );
 
     foreach ($agentNames as $name) {
         $agentExcused = $exceptions[$name] ?? [];       // ['YYYY-MM-DD' => reason]
